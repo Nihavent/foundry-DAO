@@ -14,10 +14,12 @@ contract MyGovenorTest is Test {
     MyTimeLock timelock;
     GovToken govToken;
 
-    address public user = makeAddr("user");
+    address public constant VOTER = address(1);
     uint256 public constant INITIAL_SUPPLY = 100 ether;
 
     uint256 public constant MIN_DELAY = 3600; // 1 hour delay after vote passes
+    uint256 public constant VOTING_DELAY = 1;
+    uint256 public constant VOTING_PERIOD = 50400;
 
     address[] proposers;
     address[] executors;
@@ -26,39 +28,25 @@ contract MyGovenorTest is Test {
     address[] targets;
 
     function setUp() public {
-        //(1)
+
+        govToken = new GovToken();
+        govToken.mint(VOTER, 100e18);
+
+        vm.prank(VOTER);
+        govToken.delegate(VOTER);
+
         timelock = new MyTimeLock(MIN_DELAY, proposers, executors, address(this));
-        //(2)
+        governor = new MyGovernor(govToken, timelock);
+        bytes32 proposerRole = timelock.PROPOSER_ROLE();
+        bytes32 executorRole = timelock.EXECUTOR_ROLE();
         bytes32 adminRole = timelock.DEFAULT_ADMIN_ROLE();
+
+        timelock.grantRole(proposerRole, address(governor));
+        timelock.grantRole(executorRole, address(0));
         timelock.revokeRole(adminRole, address(this));
 
         box = new Box(address(timelock));
     }
-
-    // function setUp() public {
-    //     govToken = new GovToken();
-    //     govToken.mint(user, INITIAL_SUPPLY);    
-
-    //     vm.startPrank(user);
-    //     govToken.delegate(user);
-
-    //     timelock = new TimeLock(MIN_DELAY, proposers, executors);
-
-    //     governor = new MyGovernor(govToken, timelock);
-
-    //     bytes32 proposerRole = timelock.PROPOSER_ROLE();
-    //     bytes32 executorRole = timelock.EXECUTOR_ROLE();
-    //     bytes32 adminRole = timelock.DEFAULT_ADMIN_ROLE();
-
-    //     timelock.grantRole(proposerRole, address(governor));
-    //     timelock.grantRole(executorRole, address(governor));
-    //     timelock.revokeRole(adminRole, user); // Revokes admin role from user  - this was just to deploy the contract
-
-    //     vm.stopPrank();
-
-    //     box = new Box();
-    //     box.transferOwnership(address(timelock));
-    // }
 
 
     function testCantUpdateBoxWithoutGovernor() public {
@@ -80,6 +68,50 @@ contract MyGovenorTest is Test {
 
         // View the state of the proposal
         console.log("Proposal State: ", uint256(governor.state(proposalId)));
+        console.log("governor.proposalSnapshot(proposalId): ", governor.proposalSnapshot(proposalId));
+        console.log("governor.proposalThreshold(): ", governor.proposalThreshold());
+
+        vm.warp(block.timestamp + VOTING_DELAY + 1);
+        vm.roll(block.number + VOTING_DELAY + 1);
+
+        // View the state of the proposal - should now be active
+        console.log("Proposal State: ", uint256(governor.state(proposalId)));
+        console.log("governor.proposalSnapshot(proposalId): ", governor.proposalSnapshot(proposalId));
+
+        // 2. Vote on the proposal
+        string memory reason = "Because I said so";
+         // 0 = Against, 1 = For, 2 = Abstain for this example
+        uint8 voteWay = 1;
+
+        vm.prank(VOTER);
+        governor.castVoteWithReason(proposalId, voteWay, reason);
+
+        console.log("Vote Cast");
+
+        //speed up voting period
+        vm.warp(block.timestamp + VOTING_PERIOD + 1);
+        vm.roll(block.number + VOTING_PERIOD + 1);
+
+        console.log("Proposal State: ", uint256(governor.state(proposalId)));
+        console.log("governor.proposalSnapshot(proposalId): ", governor.proposalSnapshot(proposalId));
+        console.log("governor.proposalDeadline(proposalId): ", governor.proposalDeadline(proposalId));
+
+
+        // 3. Queue the tx 
+        bytes32 descriptionHash = keccak256(abi.encodePacked(description));
+        governor.queue(targets, values, calldatas, descriptionHash);
+
+        vm.warp(block.timestamp + MIN_DELAY + 1);
+        vm.roll(block.number + MIN_DELAY + 1);
+
+        console.log("Proposal State: ", uint256(governor.state(proposalId)));
+        console.log("governor.proposalSnapshot(proposalId): ", governor.proposalSnapshot(proposalId));
+
+
+        // 4. Execute tx
+        governor.execute(targets, values, calldatas, descriptionHash);
+
+        assert(box.getNumber() == valueToStore);
     }
 
 }
